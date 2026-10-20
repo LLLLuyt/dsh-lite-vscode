@@ -35,6 +35,34 @@ function lockContentionError(sessionId: string): Error {
   return new Error(`会话 ${sessionId.slice(0, 8)} 正被另一个 dsh 实例占用（可能在 Web/Desktop 端打开中）。请先在对端关闭该会话，或稍后再试。`)
 }
 
+/** Same-side Windows has no POSIX shell, so `deleteSessionData()` (a bash
+ *  script driven through the target shell) always throws there. Remove the
+ *  persisted session directory directly instead: $DSH_HOME/sessions/<workspace>/
+ *  <session dir>, with the dir named either `<id>` or `session-<id>`.
+ *  Returns the removed paths (empty when nothing matched). */
+async function deleteSessionDataOnWindows(sessionId: string): Promise<string[]> {
+  const { promises: fs } = await import('node:fs')
+  const os = await import('node:os')
+  const dshHome = readConfig().env['DSH_HOME'] || process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+  const root = path.join(dshHome, 'sessions')
+  const plain = sessionId.replace(/^session-/, '')
+  const wanted = new Set([sessionId, plain, `session-${plain}`])
+  const removed: string[] = []
+  const dirs = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue
+    const workspaceDir = path.join(root, d.name)
+    const children = await fs.readdir(workspaceDir, { withFileTypes: true }).catch(() => [])
+    for (const c of children) {
+      if (!c.isDirectory() || !wanted.has(c.name)) continue
+      const target = path.join(workspaceDir, c.name)
+      await fs.rm(target, { recursive: true, force: true }).catch(() => undefined)
+      removed.push(target)
+    }
+  }
+  return removed
+}
+
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   private view?: vscode.WebviewView
   /** Set by the webview's post-mount 'ready' message: gates the startup
@@ -240,7 +268,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.service.ensureClient().catch(e => this.out.appendLine(`[dsh] auto-start failed: ${(e as Error).message}`))
   }
 
-  private post(m: ToWebview): void { void this.view?.webview.postMessage(m) }
+  /** Editor-area surface (ChatPanel). When present it receives the stream too:
+   *  the panel and the sidebar share one agent session, so both stay coherent
+   *  and whichever the user typed in keeps working. */
+  private panelWebview?: vscode.Webview
+
+  attachPanel(webview: vscode.Webview): void { this.panelWebview = webview }
+  detachPanel(): void { this.panelWebview = undefined }
+
+  /** Public re-exports for ChatPanel (the logic stays owned here). */
+  panelHtml(webview: vscode.Webview): string { return this.html(webview) }
+  panelOnMessage(m: ToHost): Promise<void> { return this.onMessage(m) }
+
+  private post(m: ToWebview): void {
+    void this.view?.webview.postMessage(m)
+    void this.panelWebview?.postMessage(m)
+  }
 
   private html(webview: vscode.Webview): string {
     const js = webview.asWebviewUri(vscode.Uri.joinPath(this.ctx.extensionUri, 'dist', 'webview.js'))
@@ -359,9 +402,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       switch (m.type) {
         case 'ready':
           this.webviewRendered = true
-          const logoUri = this.view ? this.view.webview.asWebviewUri(vscode.Uri.joinPath(this.ctx.extensionUri, 'media', 'dsh-logo.svg')).toString() : undefined
+          const logoSource = this.panelWebview ?? this.view?.webview
+          const logoUri = logoSource ? logoSource.asWebviewUri(vscode.Uri.joinPath(this.ctx.extensionUri, 'media', 'dsh-logo.svg')).toString() : undefined
           this.post({ type: 'bootstrap', topology: this.getLauncher().label, workspaceName: vscode.workspace.workspaceFolders?.[0]?.name, logoUri })
-          this.post({ type: 'connectionState', state: this.service.isReady ? 'ready' : 'closed' })
+          // 'starting', not 'closed': the webview's ready message arrives after
+          // resolveWebviewView has already kicked off the agent, and the ACP
+          // 'starting' event fires before the webview listens. Reporting 'closed'
+          // here painted a red dot + "not connected" + a reconnect button for the
+          // entire cold-start window (npx can take 10-60s on first run).
+          this.post({ type: 'connectionState', state: this.service.isReady ? 'ready' : 'starting' })
           this.post({ type: 'capabilities', image: this.service.imageCapable })
           this.post({ type: 'chips', chips: this.chips })
           this.postImageChips()
@@ -436,11 +485,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
   // ---------- prompt ----------
 
   private async onPrompt(text: string): Promise<void> {
-    // Wait out an in-flight startup restore first: otherwise ensureSession()
-    // would create a fresh session that the still-running resume() then
-    // closes and replaces, silently dropping this prompt's session.
-    await this.kickoff?.catch(() => undefined)
-    const session = await this.ensureSession()
+    // Optimistic busy the moment the prompt is accepted: the first prompt of a
+    // cold session waits out the ACP handshake (npx can take tens of seconds),
+    // and without this the user saw their bubble appear with no Working… line
+    // and a still-enabled send button, so they pressed Enter again.
+    this.post({ type: 'busy', busy: true })
+    let settled = false
+    try {
+      // Wait out an in-flight startup restore first: otherwise ensureSession()
+      // would create a fresh session that the still-running resume() then
+      // closes and replaces, silently dropping this prompt's session.
+      await this.kickoff?.catch(() => undefined)
+      const session = await this.ensureSession()
     this.sessionHasActivity = true
     if (session.busy) throw new Error('A prompt is already running — cancel it first.')
     const mapper = this.getLauncher().paths
@@ -474,6 +530,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     this.tracker.promptStarted(session.id)
     try {
       const res = await this.service.prompt(session.id, blocks)
+      settled = true
       this.post({ type: 'promptSettled', sessionId: session.id, stopReason: res.stopReason })
     } finally {
       session.busy = false
@@ -482,6 +539,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
       void this.pushSessions()
       void this.tracker.promptSettled(session.id)
     }
+  } catch (e) {
+    // Any failure before the prompt reaches the agent (a competing prompt,
+    // ensureSession failure, a rejected preamble) must clear the optimistic
+    // busy flag, otherwise the composer stays disabled until the next event.
+    if (!settled) this.post({ type: 'busy', busy: false })
+    throw e
+  }
   }
 
   // ---------- sessions ----------
@@ -506,13 +570,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (this.session) return
         const persisted = this.ctx.workspaceState.get<string>('dsh.activeSessionId')
         if (persisted) {
-          try {
-            await this.resume(persisted)
-            return
-          } catch (e) {
-            this.out.appendLine(`[dsh] startup restore of ${persisted.slice(0, 8)} failed: ${acpErrorText(e)}`)
-            void this.ctx.workspaceState.update('dsh.activeSessionId', undefined)
+          // A write-lock loser must NOT lose the pointer: the session is alive in
+          // another dsh instance (Desktop / Web / a second window) and becomes
+          // resumable the moment that instance lets go. Dropping it here is what
+          // made every reopen look like a fresh connect.
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await this.resume(persisted)
+              return
+            } catch (e) {
+              if (!isLockContention(e)) {
+                this.out.appendLine(`[dsh] startup restore of ${persisted.slice(0, 8)} failed: ${acpErrorText(e)}`)
+                void this.ctx.workspaceState.update('dsh.activeSessionId', undefined)
+                break
+              }
+              this.out.appendLine(`[dsh] ${persisted.slice(0, 8)} held elsewhere (attempt ${attempt + 1}/3) — retrying`)
+              await new Promise(r => setTimeout(r, 800 * (attempt + 1)))
+              if (this.session) return
+            }
           }
+          // Still locked: keep the id so a later reload can pick it back up, but
+          // don't block the UI on a session we cannot have yet.
+          if (this.session) return
         }
         if (!this.session) await this.ensureSession()
       } catch (e) {
@@ -585,15 +664,78 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const rows = [...list.sessions, ...(list.stored ?? [])]
       .filter(x => !archived.has(x.sessionId))
       .filter(x => !wsCwd || !x.cwd || x.cwd === wsCwd)
-    // Stored rows are header-only; fold their titles in via session.get (bounded).
-    const titled = await Promise.all(rows.map(async x => {
-      if (x.title) return { sessionId: x.sessionId, cwd: x.cwd ?? undefined, title: x.title }
-      const got = await c.request<{ title?: string | null }>('session.get', { sessionId: x.sessionId }).catch(() => undefined)
-      return { sessionId: x.sessionId, cwd: x.cwd ?? undefined, title: got?.title ?? undefined }
-    }))
-    this.out.appendLine(`[dsh] sessions: ${titled.length} via bridge`)
+    // `stored` rows are header-only: their `title` is always null, so the list
+    // renders as bare session ids unless each one is resolved via session.get.
+    // Fire them with bounded concurrency (not one unbounded Promise.all, which
+    // used to time out under ~30 sessions and swallow every title) and cache
+    // results so reopening the drawer doesn't re-query titles that never change.
+    const titled = await this.resolveTitles(c, rows)
+    this.out.appendLine(`[dsh] sessions: ${titled.length} via bridge (${titled.filter(t => t.title).length} titled)`)
     this.post({ type: 'sessions', sessions: titled })
     return true
+  }
+
+  /** Session titles are immutable once assigned — but a MISS is emphatically
+   *  not immutable: dsh only generates a title after the first prompt, so
+   *  caching a failure permanently kept brand-new sessions on their id for the
+   *  rest of the window. Misses expire after this TTL instead. */
+  private titleCache = new Map<string, { title?: string; at: number }>()
+  private static readonly TITLE_MISS_TTL_MS = 30_000
+
+  private cachedTitle(id: string): string | undefined {
+    const hit = this.titleCache.get(id)
+    if (!hit) return undefined
+    if (hit.title === undefined && Date.now() - hit.at > ChatViewProvider.TITLE_MISS_TTL_MS) {
+      this.titleCache.delete(id)
+      return undefined
+    }
+    return hit.title
+  }
+
+  /** dsh ids are `session-<uuid>`: slicing the raw id yields the literal
+   *  "session-" prefix, which made every untitled row read the same. */
+  private static shortId(id: string): string {
+    const stripped = id.replace(/^session-/, '')
+    return (stripped || id).slice(0, 8)
+  }
+
+  private async resolveTitles(
+    c: { request: <T>(method: string, params?: unknown) => Promise<T> },
+    rows: { sessionId: string; title?: string | null; cwd?: string | null }[],
+  ): Promise<{ sessionId: string; cwd?: string; title?: string }[]> {
+    const out: { sessionId: string; cwd?: string; title?: string }[] = rows.map(x => ({
+      sessionId: x.sessionId,
+      cwd: x.cwd ?? undefined,
+      title: x.title?.trim() || undefined,
+    }))
+    const missing = out.filter(r => !r.title && this.cachedTitle(r.sessionId) === undefined)
+    const LIMIT = 6
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const idx = cursor++
+        if (idx >= missing.length) return
+        const row = missing[idx]
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const got = await c.request<{ title?: string | null }>('session.get', { sessionId: row.sessionId })
+            this.titleCache.set(row.sessionId, { title: got?.title?.trim() || undefined, at: Date.now() })
+            break
+          } catch {
+            if (attempt === 1) this.titleCache.set(row.sessionId, { title: undefined, at: Date.now() })
+            else await new Promise(r => setTimeout(r, 120))
+          }
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(LIMIT, missing.length) }, worker))
+    for (const r of out) {
+      if (!r.title) r.title = this.cachedTitle(r.sessionId)
+    }
+    for (const r of out) {
+      if (!r.title) r.title = `会话 ${ChatViewProvider.shortId(r.sessionId)}`
+    }
+    return out
   }
 
   /** Push the workspace-filtered session list.
@@ -660,26 +802,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     return new Set(this.ctx.globalState.get<string[]>('dsh.archivedSessionIds', []))
   }
 
+  /** Delete a session.
+   *
+   *  Two paths, because the delete button must stay usable when the bridge is
+   *  not connected (a plugin that is missing/down used to hide the whole
+   *  feature):
+   *  - archive path (bridge with `sessionArchive`): archive on the host first,
+   *    then tear down locally.
+   *  - local fallback: only the local facets are cleaned up — the archive
+   *    marker that hides the row, the cached transcript, the usage entry and
+   *    the persisted session data. The dsh-side registry is left alone, so the
+   *    user is told about exactly that.
+   */
   private async onDeleteSession(sessionId: string): Promise<void> {
-    if (!this.bridge.isOn) throw new Error('Bridge plugin not connected — delete requires dsh-vscode-bridge.')
-    // Archive on the host BEFORE any local teardown: DSH 0.1.7 refuses to
-    // archive a session with live activity (WorkspaceActiveSessionError),
-    // which the bridge (>= 0.2.0) maps to data.code 'session/active'. On a
-    // refusal the session still exists, so keep local state intact and just
-    // ask the user to stop it first — tearing down first would strand the
-    // session half-deleted.
-    try {
-      await this.bridge.client!.request('session.delete', { sessionId })
-    } catch (e) {
-      if ((e as BridgeError).dataCode === 'session/active') {
-        void vscode.window.showWarningMessage('DSH: 会话正在运行，请先停止。')
-        return
-      }
-      throw e
-    }
+    // A connected bridge always reports its capabilities at handshake time, so
+    // `!== false` only differs from `=== true` for a driver/test that stubs the
+    // client without a capability set; a bridge that explicitly lacks
+    // sessionArchive still falls back to the local-only path.
+    const archiveOnHost = this.bridge.isOn && this.bridge.capabilities?.sessionArchive !== false
     const wasActive = this.session?.id === sessionId
+    // A running turn cannot be torn down: the bridge refuses this with
+    // 'session/active' (DSH 0.1.7 WorkspaceActiveSessionError), and the local
+    // fallback has no host to refuse for us — so refuse up front, before any
+    // state is touched, and keep everything intact.
+    if (wasActive && this.session?.busy) {
+      void vscode.window.showWarningMessage('DSH: 会话正在运行，请先停止当前回合，然后再删除。')
+      return
+    }
+    if (archiveOnHost) {
+      // Archive on the host BEFORE any local teardown: on a refusal the session
+      // still exists, so keep local state intact and just ask the user to stop
+      // it first — tearing down first would strand the session half-deleted.
+      try {
+        await this.bridge.client!.request('session.delete', { sessionId })
+      } catch (e) {
+        if ((e as BridgeError).dataCode === 'session/active') {
+          void vscode.window.showWarningMessage('DSH: 会话正在运行，请先停止。')
+          return
+        }
+        throw e
+      }
+    }
     if (wasActive) {
       await this.service.closeSession(sessionId).catch(() => undefined)
+      // setSession(undefined) clears the persisted active id and posts
+      // 'sessionEnded', which puts the webview back on the welcome screen
+      // instead of leaving the deleted session's transcript on display.
       this.setSession(undefined)
     }
     await this.transcripts.delete(sessionId)
@@ -687,12 +855,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
     const archived = this.archivedLocal()
     archived.add(sessionId)
     await this.ctx.globalState.update('dsh.archivedSessionIds', [...archived])
+    // Titles are immutable, so the cache would otherwise keep rendering a name
+    // for a session that no longer exists.
+    this.titleCache.delete(sessionId)
     // Physical removal of the persisted session data (archive is registry-level only).
+    let dataRemoved = false
     try {
       const removed = await deleteSessionData(sessionId)
+      dataRemoved = true
       if (removed.trim()) this.out.appendLine(`[dsh] deleted session data: ${removed.trim().split('\n').join(', ')}`)
     } catch (e) {
-      this.out.appendLine(`[dsh] physical delete failed (archived anyway): ${(e as Error).message}`)
+      // The POSIX-script path cannot run on a Windows target (no bash); fall
+      // back to removing the directory natively so "delete" really deletes.
+      if (process.platform === 'win32') {
+        try {
+          const paths = await deleteSessionDataOnWindows(sessionId)
+          dataRemoved = true
+          this.out.appendLine(paths.length > 0
+            ? `[dsh] deleted session data: ${paths.join(', ')}`
+            : `[dsh] no persisted data for ${sessionId.slice(0, 8)} (nothing to remove)`)
+        } catch (e2) {
+          this.out.appendLine(`[dsh] physical delete failed (archived anyway): ${(e2 as Error).message}`)
+        }
+      } else {
+        this.out.appendLine(`[dsh] physical delete failed (archived anyway): ${(e as Error).message}`)
+      }
+    }
+    // Tell the webview before refreshing the list: the row disappears at once
+    // even when the list refresh fails (e.g. the bridge just dropped).
+    this.post({ type: 'sessionDeleted', sessionId, archivedOnHost: archiveOnHost })
+    if (!archiveOnHost) {
+      const caveat = dataRemoved ? '' : '（持久化文件未能清理，详见 DSH 输出日志）'
+      const why = this.bridge.isOn ? '当前 bridge 版本不支持归档' : 'bridge 未连接'
+      void vscode.window.showInformationMessage(`DSH: 已在本地删除该会话${caveat}。${why}，dsh 侧记录未变；bridge 可用后它可能重新出现在列表里。`)
     }
     await this.pushSessions()
   }

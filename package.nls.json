@@ -3,6 +3,8 @@
   "view.chat.name": "Chat",
   "cmd.newSession": "New Session",
   "cmd.focusChat": "DSH: Focus Chat",
+  "cmd.openInEditor": "DSH: Open Chat in Editor Area",
+  "cmd.openInNewWindow": "DSH: Open in New Window",
   "cmd.runInTerminal": "DSH: Run in Terminal",
   "cmd.addContext": "DSH: Add Active File to Context",
   "cmd.refreshSessions": "DSH: Refresh Sessions",

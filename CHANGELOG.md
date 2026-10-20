@@ -2,6 +2,29 @@
 
 All notable changes to DSH Lite are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/), versioning follows [SemVer](https://semver.org/).
 
+## [0.3.1] — 2026-10-20
+
+Fork of EPCN-fla/dsh-lite-vscode. See [Credits](README.md#credits).
+
+### Added
+- **Windows-native bridge install**: `DSH: Install/Repair Bridge Plugin` now wires the `acp-vscode` profile on Windows instead of refusing to run (the POSIX bash installer was the only path, so Windows users could never install the required bridge)
+- **Editor-area chat** (`DSH: Open Chat in Editor Area`) and **open in new window**
+- **Session delete without the bridge**: always-visible delete button with a local-only fallback; the button no longer vanishes when bridge capabilities are missing
+- **Claude Code-style conversation layout** (row-aligned messages, left-rail tool rows)
+- **Collapsible session drawer** that overlays the conversation instead of shrinking it
+
+### Fixed
+- **Bridge never connected on Windows** (discoveryDir() treated `host === 'windows'` as an unsupported topology, so every Windows user saw the install prompt forever, uuid titles, and a 3s reconnect loop)
+- **Bridge requests had no timeout**: one wedged connection pinned the reconnect promise and every later poll merged into it
+- **Cold start reported `closed` instead of `starting`**, painting "not connected" for the whole boot window
+- **Reconnect race**: a retired socket's async close tore down the newly established connection
+- **Session titles showed the literal `session-` prefix** (and a failed title lookup was cached permanently)
+- **Forced scroll-to-bottom on every token** made reading earlier messages impossible
+- **Shift+Enter was stolen** by the slash/mention menus
+- **No busy feedback on the first prompt**; a competing prompt left the composer stuck
+- **Windows delete never removed data** (`deleteSessionData` was a bash script)
+- Posting into a disposed editor panel (detachPanel was never called)
+- `installScript.ts` was written with CRLF, which would have injected `\r` into the generated POSIX script and silently broken WSL installs
 ## [0.3.0] — 2026-10-08
 
 ### Added

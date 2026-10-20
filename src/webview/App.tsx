@@ -179,6 +179,16 @@ export default function App(): React.JSX.Element {
   const [permCurrent, setPermCurrent] = useState<string | undefined>(undefined)
   const [imageChips, setImageChips] = useState<{ name: string; size: number }[]>([])
   const listRef = useRef<HTMLDivElement>(null)
+  /** Sticky-bottom: only auto-scroll while the user is already at the bottom.
+   *  The old unconditional scrollTo ran on EVERY token (state.ts rebuilds the
+   *  messages array per chunk), so scrolling up to reread an answer yanked the
+   *  view back down immediately. */
+  const stickRef = useRef(true)
+  const onMessagesScroll = (): void => {
+    const el = listRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
   const persistTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const sessionIdRef = useRef<string | undefined>(undefined)
   sessionIdRef.current = s.sessionId
@@ -189,6 +199,16 @@ export default function App(): React.JSX.Element {
       if (m.type === 'bootstrap') { setTopology(m.topology); setWorkspaceName(m.workspaceName); setLogoUri(m.logoUri) }
       else if (m.type === 'chips') setChips(m.chips)
       else if (m.type === 'sessions') setOrdering(prev => mergeSessions(prev, m.sessions, sessionIdRef.current))
+      else if (m.type === 'sessionDeleted') {
+        // Drop the row immediately: the follow-up 'sessions' refresh can be
+        // delayed (or lost when the bridge just dropped), and a deleted session
+        // lingering in the sidebar looks like the delete failed.
+        setOrdering(prev => {
+          const byId = new Map(prev.byId)
+          byId.delete(m.sessionId)
+          return { order: prev.order.filter(id => id !== m.sessionId), byId }
+        })
+      }
       else if (m.type === 'fileSearchResults') setFileResults(prev => (m.reqId >= prev.reqId ? m : prev))
       else if (m.type === 'changedFiles') { if (m.sessionId === sessionIdRef.current) setChangedFiles(m.files) }
       else if (m.type === 'capabilities') setImageCapable(m.image)
@@ -204,7 +224,11 @@ export default function App(): React.JSX.Element {
     return () => window.removeEventListener('message', onMsg)
   }, [])
 
-  useEffect(() => { listRef.current?.scrollTo({ top: listRef.current.scrollHeight }) }, [s.messages, s.busy])
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || !stickRef.current) return
+    el.scrollTo({ top: el.scrollHeight })
+  }, [s.messages, s.busy])
 
   // Keep the active session present in the sidebar ordering (server omits it while active).
   useEffect(() => { setOrdering(prev => ensureActive(prev, s.sessionId)) }, [s.sessionId])
@@ -285,7 +309,7 @@ export default function App(): React.JSX.Element {
       <div className="body">
         <div className="chat-col">
           {s.todos && s.todos.length > 0 && <TaskCard todos={s.todos} />}
-          <div className="messages" ref={listRef}>
+          <div className="messages" ref={listRef} onScroll={onMessagesScroll}>
             {s.messages.length === 0 && s.connection === 'ready' && !s.busy && (
               <Welcome
                 logoUri={logoUri}
@@ -306,7 +330,18 @@ export default function App(): React.JSX.Element {
             {s.busy && <div className="busy">Working…</div>}
           </div>
         </div>
-        {showSessions && <SessionsPanel rows={sessionRows} canRename={bridgeCaps?.sessionTitle === true} canDelete={bridgeCaps?.sessionArchive === true} />}
+        {showSessions && (
+          <>
+            <div className="sessions-backdrop" onClick={() => setShowSessions(false)} />
+            <SessionsPanel rows={sessionRows}
+              canRename={bridgeCaps?.sessionTitle === true}
+              canDelete={bridgeCaps?.sessionArchive === true}
+              deleteHint={bridgeCaps
+                ? '删除该会话（当前 bridge 不支持归档：只清理本地记录，dsh 侧记录保留）'
+                : '删除该会话（bridge 未连接：只清理本地记录，dsh 侧记录保留）'}
+              onClose={() => setShowSessions(false)} />
+          </>
+        )}
       </div>
 
       {s.permission && (

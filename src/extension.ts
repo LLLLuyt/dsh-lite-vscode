@@ -6,6 +6,7 @@ import { detectHostSide, resolveLauncher, LauncherConfigError } from './launcher
 import type { Launcher } from './launcher/types.js'
 import { AcpService } from './acp/service.js'
 import { ChatViewProvider } from './chat/ChatViewProvider.js'
+import { ChatPanel } from './chat/ChatPanel.js'
 import { TranscriptStore } from './chat/TranscriptStore.js'
 import { ChangedFilesTracker, BaselineContentProvider } from './chat/ChangedFilesTracker.js'
 import { registerParticipant, explainSelection } from './chat/participant.js'
@@ -119,6 +120,18 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('dsh.newSession', () => chat.newSession()),
     vscode.commands.registerCommand('dsh.focusChat', () => vscode.commands.executeCommand('dsh.chatView.focus')),
+    // Claude Code parity: open the conversation as a full editor tab instead of
+    // squeezing it into the sidebar.
+    vscode.commands.registerCommand('dsh.openInEditor', () => {
+      ChatPanel.open(context, chat, vscode.ViewColumn.Active)
+      return undefined
+    }),
+    vscode.commands.registerCommand('dsh.openInNewWindow', async () => {
+      // A separate VS Code window attached to the same workspace: the agent
+      // session is discovered through the bridge, so both windows stay live.
+      const folder = vscode.workspace.workspaceFolders?.[0]?.uri
+      await vscode.commands.executeCommand('vscode.openFolder', folder, { forceNewWindow: true })
+    }),
     vscode.commands.registerCommand('dsh.refreshSessions', () => chat.pushSessions()),
     vscode.commands.registerCommand('dsh.resumeSession', async (sessionId: string) => {
       await chat.resume(sessionId)

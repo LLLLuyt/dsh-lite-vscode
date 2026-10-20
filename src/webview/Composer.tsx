@@ -128,7 +128,12 @@ export function Composer(props: {
     // Never steal keys mid-IME-composition (pinyin etc.): Enter confirms the
     // candidate there, it must not select menu items or send the prompt.
     if (e.nativeEvent.isComposing) return
-    if (slash) {
+    // Shift+Enter is always a newline, even while a completion menu is open:
+    // the menu branches below used to claim it (Enter || Tab, no shift check),
+    // so pressing Shift+Enter while typing "/" ran a command and while typing
+    // "@" inserted a file chip.
+    const newlineIntent = e.key === 'Enter' && e.shiftKey
+    if (slash && !newlineIntent) {
       if (slashItems.length > 0) {
         if (e.key === 'ArrowDown') { e.preventDefault(); setSlashSel(i => Math.min(i + 1, slashItems.length - 1)); return }
         if (e.key === 'ArrowUp') { e.preventDefault(); setSlashSel(i => Math.max(i - 1, 0)); return }
@@ -136,7 +141,7 @@ export function Composer(props: {
       }
       if (e.key === 'Escape') { e.preventDefault(); closeSlash(); return }
     }
-    if (atState && props.results.length > 0) {
+    if (atState && props.results.length > 0 && !newlineIntent) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSel(i => Math.min(i + 1, props.results.length - 1)); return }
       if (e.key === 'ArrowUp') { e.preventDefault(); setSel(i => Math.max(i - 1, 0)); return }
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pick(props.results[Math.min(sel, props.results.length - 1)]); return }

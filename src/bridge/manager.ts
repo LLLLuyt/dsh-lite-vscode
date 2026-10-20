@@ -76,7 +76,20 @@ export class BridgeManager implements vscode.Disposable {
       const dshHome = this.dshHomeGuess() || `${probe.home}/.dsh`
       return `${probe.uncPrefix}${dshHome.replace(/\//g, '\\')}\\vscode-bridge`
     }
-    if (target === 'windows' || host === 'windows') return undefined // topology 3: unsupported
+    // Topology 3 (WSL host driving a Windows-side dsh) is the only unsupported
+    // combination. The same-side Windows case (host=windows, target=windows) is
+    // the common one and must read the Windows discovery dir — the old check
+    // bailed out on host==='windows' alone, so every Windows user saw "no
+    // discovery dir for this topology" and the required-bridge prompt forever.
+    if (host === 'wsl' && target === 'windows') return undefined
+    if (host === 'windows' && target === 'windows') {
+      const home = this.dshHomeGuess() || `${os.homedir()}\\.dsh`
+      return `${home.replace(/\\+$/, '')}\\vscode-bridge`
+    }
+    // A windows target from a non-Windows host is unsupported: returning a posix
+    // path here would silently read the wrong directory ("bridge vanished")
+    // instead of reporting the topology as unsupported.
+    if (target === 'windows') return undefined
     const home = this.dshHomeGuess() || `${os.homedir()}/.dsh`
     return `${home}/vscode-bridge`
   }
@@ -110,11 +123,23 @@ export class BridgeManager implements vscode.Disposable {
       const folder = vscode.workspace.workspaceFolders?.[0]
       if (!folder) { this.teardown('no workspace folder'); return }
       const dshCwd = await this.getLauncherPaths().toDsh(folder.uri.fsPath)
-      const entry = pickEntry(entries, dshCwd, process.platform === 'win32')
+      const cfg = this.getConfig()
+      const host = process.platform === 'win32' ? 'windows' : (process.env.WSL_DISTRO_NAME || vscode.env.remoteName === 'wsl') ? 'wsl' : 'posix'
+      const target = cfg.runtime === 'auto' ? host : cfg.runtime
+      // Normalize case for the side that OWNS the paths, not the extension host.
+      const entry = pickEntry(entries, dshCwd, target === 'windows')
       if (!entry) { this.teardown('no bridge entry for this workspace'); return }
       await this.connectEntry(entry)
     })()
-    try { await this.reconnecting } finally { this.reconnecting = undefined }
+    // Guarantee the in-flight promise is released even if a step hangs: a stuck
+    // reconnect used to pin this.reconnecting forever, so every 3s poll merged
+    // into the same dead promise and the bridge was never retried.
+    try {
+      await Promise.race([
+        this.reconnecting,
+        new Promise<void>(r => setTimeout(r, 20_000).unref?.()),
+      ])
+    } finally { this.reconnecting = undefined }
   }
 
   private async connectEntry(entry: DiscoveryEntry): Promise<void> {
@@ -123,12 +148,16 @@ export class BridgeManager implements vscode.Disposable {
       this.state = 'connecting'
       this._onState.fire({ state: 'connecting' })
       const client = await BridgeClient.connect(entry)
-      this.client?.close()
+      // Retire the old client WITHOUT letting its async 'close' callback tear
+      // down the new one: socket close events land on a later tick, when
+      // this.client already points at the fresh connection.
+      const old = this.client
+      if (old) { old.onClose = () => undefined; old.close() }
       this.client = client
       this.connectedPid = entry.pid
       this.dshVersion = client.handshake?.dshVersion ?? entry.dshVersion
       client.onEvent = e => this._onEvent.fire(e)
-      client.onClose = () => this.teardown('connection closed')
+      client.onClose = () => this.teardown('connection closed', client)
       this.state = 'on'
       this.out.appendLine(`[bridge] connected pid=${entry.pid} v${client.handshake?.version} dsh=${this.dshVersion ?? 'unknown'} caps=${JSON.stringify(client.capabilities)}`)
       const parsed = parseDshVersion(this.dshVersion)
@@ -145,7 +174,10 @@ export class BridgeManager implements vscode.Disposable {
   private connectedPid?: number
   private dshVersion?: string
 
-  teardown(reason: string): void {
+  /** `from` identifies the connection that reported the close: a stale socket's
+   *  callback must not tear down a newer, healthy connection. */
+  teardown(reason: string, from?: BridgeClient): void {
+    if (from && from !== this.client) return
     if (this.state === 'off' && !this.client) return
     this.out.appendLine(`[bridge] off (${reason})`)
     this.client?.close()

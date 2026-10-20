@@ -111,8 +111,8 @@ body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size
 .md th, .md td { border: 1px solid var(--vscode-panelBorder); padding: 2px 8px; }
 
 
-/* sessions sidebar */
-.sessions { width: 168px; min-width: 168px; border-left: 1px solid var(--vscode-panelBorder); display: flex; flex-direction: column; }
+/* sessions drawer (overlays the conversation; never shrinks it) */
+.sessions { position: absolute; top: 0; right: 0; bottom: 0; width: 220px; z-index: 30; display: flex; flex-direction: column; background: var(--vscode-quickInput-background, var(--vscode-editor-background)); border-left: 1px solid var(--vscode-panelBorder); box-shadow: -4px 0 16px #00000033; }
 .sessions-head { display: flex; align-items: center; padding: 6px 8px; font-weight: 600; font-size: 0.9em; border-bottom: 1px solid var(--vscode-panelBorder); }
 .sessions-list { flex: 1; overflow-y: auto; padding: 4px; }
 .session-row { display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
@@ -238,3 +238,50 @@ body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size
 /* The connection dot doubles as the reconnect affordance while closed. */
 .dot-btn { border: none; padding: 0; cursor: pointer; flex: none; }
 .dot-btn:hover { outline: 1px solid var(--vscode-testing-iconFailed); }
+
+/* ============================================================
+   Claude Code-style conversation layout
+   Row-aligned messages (no chat bubbles), tool rows as left-rail
+   entries, generous gutter — mirrors the Claude Code webview.
+   ============================================================ */
+.messages { padding: 14px 20px 8px; gap: 16px; }
+
+.msg.user {
+  align-self: stretch; max-width: none; border-radius: 8px; padding: 10px 14px;
+  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+  border: 1px solid var(--vscode-panelBorder);
+}
+.msg.user .md p { margin: 0.35em 0; }
+
+.msg.assistant { align-self: stretch; max-width: none; padding: 0 2px; line-height: 1.6; }
+
+.msg-tools.user { align-self: stretch; justify-content: flex-start; padding: 0 14px; margin-top: -12px; }
+
+.msg.tool {
+  border: none; border-left: 2px solid var(--vscode-panelBorder);
+  border-radius: 0; padding: 1px 0 1px 10px; font-size: 0.88em;
+}
+.msg.tool summary { padding: 1px 0; }
+
+.msg.thought {
+  border-left: 2px solid var(--vscode-panelBorder);
+  border-radius: 0; padding-left: 10px; font-size: 0.88em;
+}
+
+.msg.system { padding: 0 20px; }
+
+.composer { margin: 4px 20px 10px; border-radius: 10px; padding: 8px 10px 6px; }
+.composer textarea { min-height: 56px; }
+
+.bar { padding: 6px 20px; }
+
+/* Session drawer: overlays the conversation instead of shrinking it. */
+.sessions-backdrop { position: absolute; inset: 0; z-index: 29; background: #00000026; }
+.body { position: relative; }
+.sessions { animation: dsh-drawer-in .12s ease-out; }
+@keyframes dsh-drawer-in { from { transform: translateX(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Disabled icon buttons (bridge-off delete, unavailable actions): a real
+   disabled affordance instead of the inline opacity the panel used to need. */
+.icon-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.icon-btn[disabled]:hover { background: none; }

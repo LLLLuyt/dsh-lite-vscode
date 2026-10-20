@@ -1,8 +1,8 @@
 {
   "name": "dsh-lite-vscode",
-  "displayName": "DSH Lite for VS Code",
+  "displayName": "DSH Lite for VS Code (community fork)",
   "description": "DeepSeek Harness (dsh) agent integration for VS Code: chat, code edits and tool calls via the Agent Client Protocol.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "Fla1337",
   "license": "MIT",
   "private": true,
@@ -64,6 +64,18 @@
         "command": "dsh.focusChat",
         "title": "%cmd.focusChat%",
         "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "dsh.openInEditor",
+        "title": "%cmd.openInEditor%",
+        "icon": "$(open-preview)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.openInNewWindow",
+        "title": "%cmd.openInNewWindow%",
+        "icon": "$(empty-window)",
+        "category": "DSH"
       },
       {
         "command": "dsh.runInTerminal",

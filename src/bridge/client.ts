@@ -88,17 +88,33 @@ export class BridgeClient {
     })
     const client = new BridgeClient(sock)
     client.setToken(disc.token)
-    client.handshake = await client.request<BridgeHandshake>('bridge.handshake')
+    // The handshake used to have no timeout: a process that accepts the TCP
+    // connection but never answers (port squatting, a wedged plugin) left this
+    // promise pending forever, which pinned BridgeManager.reconnecting and made
+    // every later poll merge into the same dead promise.
+    try {
+      client.handshake = await client.request<BridgeHandshake>('bridge.handshake', undefined, 5_000)
+    } catch (e) {
+      client.close()
+      throw e
+    }
     return client
   }
 
   get capabilities(): BridgeCapabilities | undefined { return this.handshake?.capabilities }
 
-  request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  request<T = unknown>(method: string, params?: unknown, timeoutMs = 15_000): Promise<T> {
     const id = ++this.nextId
     const frame = { jsonrpc: '2.0', id, method, params: params ?? {}, token: this.token }
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`bridge request "${method}" timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.pending.set(id, {
+        resolve: (v => { clearTimeout(timer); resolve(v as T) }) as (v: unknown) => void,
+        reject: (e => { clearTimeout(timer); reject(e) }) as (e: unknown) => void,
+      })
       this.sock.write(JSON.stringify(frame) + '\n')
     })
   }

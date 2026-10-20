@@ -42,6 +42,11 @@ export type ToWebview =
   | { type: 'permissionRequest'; requestId: string; title: string; description?: string; options: { optionId: string; name: string; kind: string }[] }
   | { type: 'permissionResolved'; requestId: string }
   | { type: 'sessions'; sessions: { sessionId: string; cwd?: string; title?: string; updatedAt?: string }[] }
+  /** A session was deleted: drop the row right away (the refreshed `sessions`
+   *  list follows). `archivedOnHost` is false for the bridge-less fallback,
+   *  where only local state (archive marker, transcript, persisted data) was
+   *  cleaned up. */
+  | { type: 'sessionDeleted'; sessionId: string; archivedOnHost: boolean }
   | { type: 'chips'; chips: ContextChip[] }
   | { type: 'fileSearchResults'; reqId: number; files: { path: string; label: string }[] }
   | { type: 'changedFiles'; sessionId: string; files: { path: string; label: string; kind: 'created' | 'modified' }[] }

@@ -3,6 +3,8 @@
   "view.chat.name": "对话",
   "cmd.newSession": "新建会话",
   "cmd.focusChat": "DSH: 聚焦对话面板",
+  "cmd.openInEditor": "DSH: 在编辑器区打开对话",
+  "cmd.openInNewWindow": "DSH: 在新窗口打开",
   "cmd.runInTerminal": "DSH: 在终端中运行",
   "cmd.addContext": "DSH: 将当前文件加入上下文",
   "cmd.refreshSessions": "DSH: 刷新会话列表",
