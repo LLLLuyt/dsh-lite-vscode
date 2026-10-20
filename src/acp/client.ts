@@ -139,9 +139,22 @@ export class AcpClient {
 
   dispose(): void {
     try { this.conn.close() } catch { /* already closed */ }
-    if (this.proc.exitCode === null) {
-      this.proc.kill('SIGTERM')
-      setTimeout(() => { if (this.proc.exitCode === null) this.proc.kill('SIGKILL') }, 3000).unref()
+    const pid = this.proc.pid
+    if (this.proc.exitCode !== null || pid === undefined) return
+    if (process.platform === 'win32') {
+      // The launch spec goes through `cmd.exe /c`, so the real dsh is a CHILD of
+      // the process we spawned. Killing cmd.exe leaves that child running, and a
+      // surviving dsh keeps the session write lock — which is exactly what
+      // produces "会话 xxx 正被另一个 dsh 实例占用" after a window reload.
+      // taskkill /T walks the whole tree.
+      try {
+        spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      } catch {
+        this.proc.kill('SIGTERM')
+      }
+      return
     }
+    this.proc.kill('SIGTERM')
+    setTimeout(() => { if (this.proc.exitCode === null) this.proc.kill('SIGKILL') }, 3000).unref()
   }
 }

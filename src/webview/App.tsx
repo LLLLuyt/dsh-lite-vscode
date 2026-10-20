@@ -56,12 +56,12 @@ function MessageView({ m }: { m: ChatMessage }): React.JSX.Element {
       </>
     )
     case 'assistant': return <div className="msg assistant"><Markdown text={m.text} /><div className="msg-tools"><CopyButton text={m.text} /></div></div>
-    case 'thought': return <details className="msg thought"><summary>Thinking…</summary><Markdown text={m.text} /></details>
+    case 'thought': return <details className="msg thought"><summary>思考中…</summary><Markdown text={m.text} /></details>
     case 'system': return <div className="msg system">{m.text}</div>
     case 'todo':
       return (
         <div className="msg todo">
-          <div className="todo-head">Tasks</div>
+          <div className="todo-head">任务</div>
           {m.items.map((t, i) => (
             <div key={i} className={`todo-item st-${t.status}`}>
               <span className="todo-icon">{t.status === 'completed' ? '✔' : t.status === 'in_progress' ? '◐' : '○'}</span>
@@ -140,7 +140,7 @@ function TaskCard({ todos }: { todos: { content: string; status: string }[] }): 
     <div className={`taskcard${open ? ' open' : ''}`}>
       <button className="taskcard-head" title={open ? 'Collapse' : 'Expand'} onClick={() => setOpen(v => !v)}>
         <span className="taskcard-chev">{open ? '▾' : '▸'}</span>
-        <span className="taskcard-title">Tasks</span>
+        <span className="taskcard-title">任务</span>
         <span className="taskcard-progress">{done}/{todos.length}</span>
       </button>
       {open && (
@@ -168,6 +168,10 @@ export default function App(): React.JSX.Element {
   const [workspaceName, setWorkspaceName] = useState<string | undefined>(undefined)
   const [logoUri, setLogoUri] = useState<string | undefined>(undefined)
   const [showSessions, setShowSessions] = useState(false)
+  /** True while a session-list request is outstanding: the drawer used to
+   *  render "还没有会话" for the first frame, which reads as "my sessions are
+   *  gone" rather than "still loading". */
+  const [sessionsLoading, setSessionsLoading] = useState(false)
   const [ordering, setOrdering] = useState<SessionOrdering>({ order: [], byId: new Map() })
   const [fileResults, setFileResults] = useState<{ reqId: number; files: FilePick[] }>({ reqId: -1, files: [] })
   const [changedFiles, setChangedFiles] = useState<{ path: string; label: string; kind: 'created' | 'modified' }[]>([])
@@ -198,7 +202,10 @@ export default function App(): React.JSX.Element {
       const m = e.data
       if (m.type === 'bootstrap') { setTopology(m.topology); setWorkspaceName(m.workspaceName); setLogoUri(m.logoUri) }
       else if (m.type === 'chips') setChips(m.chips)
-      else if (m.type === 'sessions') setOrdering(prev => mergeSessions(prev, m.sessions, sessionIdRef.current))
+      else if (m.type === 'sessions') {
+        setOrdering(prev => mergeSessions(prev, m.sessions, sessionIdRef.current))
+        setSessionsLoading(false)
+      }
       else if (m.type === 'sessionDeleted') {
         // Drop the row immediately: the follow-up 'sessions' refresh can be
         // delayed (or lost when the bridge just dropped), and a deleted session
@@ -303,7 +310,11 @@ export default function App(): React.JSX.Element {
         {sessionTitle && <span className="session-name" title={`${s.sessionId}\n${topology}`}>{sessionTitle}</span>}
         <span className="spacer" />
         <button className={`icon-btn panel-toggle${showSessions ? ' on' : ''}`} title="Toggle sessions sidebar"
-          onClick={() => { setShowSessions(v => !v); if (!showSessions) post({ type: 'listSessions' }) }}>☰</button>
+          onClick={() => {
+            const opening = !showSessions
+            setShowSessions(opening)
+            if (opening) { setSessionsLoading(true); post({ type: 'listSessions' }) }
+          }}>☰</button>
       </header>
 
       <div className="body">
@@ -326,14 +337,15 @@ export default function App(): React.JSX.Element {
               </div>
             )}
             {s.messages.map((m, i) => <MessageView key={i} m={m} />)}
-            {s.commandRunning && <div className="busy">Running {s.commandRunning}…</div>}
-            {s.busy && <div className="busy">Working…</div>}
+            {s.commandRunning && <div className="busy">正在运行 {s.commandRunning}…</div>}
+            {s.busy && <div className="busy">处理中…</div>}
           </div>
         </div>
         {showSessions && (
           <>
             <div className="sessions-backdrop" onClick={() => setShowSessions(false)} />
             <SessionsPanel rows={sessionRows}
+              loading={sessionsLoading}
               canRename={bridgeCaps?.sessionTitle === true}
               canDelete={bridgeCaps?.sessionArchive === true}
               deleteHint={bridgeCaps
@@ -354,7 +366,7 @@ export default function App(): React.JSX.Element {
                 {o.name}
               </button>
             ))}
-            <button className="reject" onClick={() => post({ type: 'permissionResponse', requestId: s.permission!.requestId, optionId: null })}>Dismiss</button>
+            <button className="reject" onClick={() => post({ type: 'permissionResponse', requestId: s.permission!.requestId, optionId: null })}>忽略</button>
           </div>
         </div>
       )}
@@ -382,7 +394,7 @@ export default function App(): React.JSX.Element {
         </div>
       )}
 
-      {s.planMode && <div className="plan-mode">📋 Plan mode — the agent proposes a plan before acting</div>}
+      {s.planMode && <div className="plan-mode">📋 计划模式 — agent 会先给出方案再动手</div>}
       <ChangesBar files={changedFiles} />
       <Composer
         busy={s.busy}

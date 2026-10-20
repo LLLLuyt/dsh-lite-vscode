@@ -164,6 +164,14 @@ export function Composer(props: {
 
   useEffect(() => setSel(0), [props.results])
   useEffect(() => setSlashSel(0), [slash?.query])
+  /** Grow the textarea with its rendered content, capped so a pasted essay
+   *  doesn't swallow the conversation. */
+  useEffect(() => {
+    const ta = taRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`
+  }, [input])
   // Keyboard navigation must keep the highlighted row visible in the
   // scrollable dropdowns.
   useEffect(() => {
@@ -205,12 +213,15 @@ export function Composer(props: {
       <textarea
         ref={taRef}
         value={input}
-        placeholder={props.sessionStarted ? 'Ask dsh…  (@ files, / commands, Enter to send)' : 'Ask dsh to start a session…'}
+        placeholder={props.sessionStarted ? '向 dsh 提问…（@ 引用文件，/ 唤起命令，Enter 发送，Shift+Enter 换行）' : '输入内容以开始对话…'}
         onChange={e => { setInput(e.target.value); detectAt(e.target.value, e.target.selectionStart ?? e.target.value.length); detectSlash(e.target.value) }}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
         onBlur={() => setTimeout(() => { closeAt(); closeSlash() }, 150)}
-        rows={Math.min(8, input.split('\n').length + 1)}
+        // Height follows the RENDERED content (soft wraps included), not the
+        // newline count: a long wrapped paragraph used to stay at one row and
+        // scroll internally after ~3 lines.
+        rows={1}
       />
       <div className="rail">
         {props.railLeft}

@@ -134,7 +134,24 @@ export function reduce(s: ChatState, a: ChatAction): ChatState {
     }
     case 'update': return m.sessionId === s.sessionId ? applyUpdate(s, m.update) : s
     case 'busy': return { ...s, busy: m.busy }
-    case 'promptSettled': return { ...s, busy: false }
+    case 'promptSettled': {
+      // A round that ended for a reason other than a clean turn (token cap,
+      // refusal, cancellation) used to look identical to success, so the user
+      // never learned their answer had been truncated.
+      const reason = m.stopReason
+      const notice = reason === 'max_tokens'
+        ? { kind: 'system' as const, text: '⚠ 已达输出上限，本轮回复被截断。' }
+        : reason === 'refusal'
+          ? { kind: 'system' as const, text: '⚠ 模型拒绝了本轮请求。' }
+          : reason === 'cancelled' || reason === 'canceled'
+            ? { kind: 'system' as const, text: '已取消。' }
+            : undefined
+      return {
+        ...s,
+        busy: false,
+        messages: notice ? [...s.messages, notice] : s.messages,
+      }
+    }
     case 'permissionRequest': return { ...s, permission: { requestId: m.requestId, title: m.title, options: m.options } }
     case 'permissionResolved': return { ...s, permission: undefined }
     case 'todo': return { ...s, todos: m.todos }
@@ -148,7 +165,10 @@ export function reduce(s: ChatState, a: ChatAction): ChatState {
       return { ...s, messages: [...s.messages, { kind: 'system', text: `${m.kind === 'success' ? '✓' : '✖'} ${text}` }] }
     }
     case 'planMode': return { ...s, planMode: m.active }
-    case 'error': return { ...s, error: m.message, busy: false }
+    // Do NOT clear busy here: an unrelated failure (e.g. switching model) used
+    // to flip the composer's send button back to ➤ while the agent was still
+    // running. Busy is owned by the explicit 'busy' messages.
+    case 'error': return { ...s, error: m.message }
     default: return s
   }
 }

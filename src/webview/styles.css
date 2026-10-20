@@ -271,7 +271,7 @@ body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size
 .msg.system { padding: 0 20px; }
 
 .composer { margin: 4px 20px 10px; border-radius: 10px; padding: 8px 10px 6px; }
-.composer textarea { min-height: 56px; }
+.composer textarea { min-height: 56px; max-height: 220px; overflow-y: auto; }
 
 .bar { padding: 6px 20px; }
 

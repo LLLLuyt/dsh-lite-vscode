@@ -19,6 +19,8 @@ export function SessionsPanel(props: {
   /** Tooltip for the local-only delete; the host explains the exact reason
    *  (bridge missing vs. bridge without sessionArchive). */
   deleteHint?: string
+  /** True while the first session-list response is still in flight. */
+  loading?: boolean
   onClose?: () => void
 }): React.JSX.Element {
   const [renaming, setRenaming] = useState<string | undefined>(undefined)
@@ -46,7 +48,9 @@ export function SessionsPanel(props: {
         {props.onClose && <button className="icon-btn" title="关闭" onClick={props.onClose}>✕</button>}
       </div>
       <div className="sessions-list">
-        {rows.length === 0 && <div className="hint">还没有会话</div>}
+        {rows.length === 0 && (
+          <div className="hint">{props.loading ? '正在读取会话…' : '还没有会话'}</div>
+        )}
         {rows.map(r => (
           <div key={r.sessionId} className={`session-row${r.active ? ' active' : ''}`}
             title={`${r.sessionId}${r.updatedAt ? `\n${r.updatedAt}` : ''}`}
@@ -55,8 +59,20 @@ export function SessionsPanel(props: {
               <input
                 className="session-rename" autoFocus value={draft}
                 onChange={e => setDraft(e.target.value)}
-                onBlur={() => commitRename(r.sessionId)}
-                onKeyDown={e => { if (e.key === 'Enter') commitRename(r.sessionId); if (e.key === 'Escape') setRenaming(undefined) }}
+                // Commit on blur ONLY when the value actually changed: clicking
+                // elsewhere used to fire a rename RPC with the unchanged title,
+                // and there was no way to abandon an edit except Escape.
+                onBlur={() => {
+                  if (renaming !== r.sessionId) return
+                  if (draft.trim() === (r.title ?? '').trim()) { setRenaming(undefined); return }
+                  commitRename(r.sessionId)
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitRename(r.sessionId) }
+                  // Cancel: clear the editing id BEFORE blur fires so the blur
+                  // handler above sees no pending rename.
+                  if (e.key === 'Escape') { e.preventDefault(); setRenaming(undefined) }
+                }}
                 onClick={e => e.stopPropagation()}
               />
             ) : (
